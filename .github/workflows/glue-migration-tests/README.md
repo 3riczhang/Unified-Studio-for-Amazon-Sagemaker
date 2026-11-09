@@ -20,15 +20,15 @@ configure that repository setting.
 
 Live tests run after unit tests on `main` pushes affecting Glue files, or manual
 dispatch on `main`. Pull requests receive no AWS credentials. Other branches
-cannot run the live job. To approve another branch, update both the workflow's
-trigger/condition and the setup role's trust policy.
+cannot run the live job with this workflow. Unit tests use GitHub-hosted runners;
+E2E uses the `glue-migration-e2e` CodeBuild project in your test account.
 
 Configure these GitHub repository variables before enabling live runs:
 
 | Variable | Value |
 |---|---|
 | `GS_SMUS_E2E_ACCOUNT_ID` | AWS account containing the existing fixture |
-| `GS_SMUS_E2E_SETUP_ROLE_ARN` | Setup/cleanup role assumed through GitHub OIDC |
+| `GS_SMUS_E2E_SETUP_ROLE_ARN` | Setup/cleanup role assumed by the CodeBuild service role |
 | `GS_SMUS_E2E_RUNNER_ROLE_ARN` | Migration caller role assumed by the setup role |
 | `GS_SMUS_E2E_REGION` | Glue and fixture Region |
 | `GS_SMUS_E2E_DOMAIN_REGION` | DataZone domain Region |
@@ -44,25 +44,48 @@ The workflow checks repository variables before assuming a role, then checks all
 fixture settings before pytest. Missing configuration fails the job instead of
 reporting success with skipped tests.
 
-### Role trust and permissions
+### CodeBuild runner setup
 
-Configure a GitHub OIDC provider in the test account. Restrict the setup role's
-trust policy to your repository's `main` branch, replacing the placeholders:
+Create an AWS CodeConnections GitHub App connection in the test account and
+complete its browser authorization for this repository only. Once its status is
+`AVAILABLE`, deploy [codebuild-runner.yml](codebuild-runner.yml):
 
-```text
-repo:<OWNER>/<REPOSITORY>:ref:refs/heads/main
+```bash
+aws cloudformation deploy \
+  --stack-name glue-migration-e2e-runner \
+  --template-file .github/workflows/glue-migration-tests/codebuild-runner.yml \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    RepositoryUrl=https://github.com/OWNER/REPOSITORY \
+    GitHubActorId=YOUR_NUMERIC_GITHUB_USER_ID \
+    ConnectionArn=YOUR_CONNECTION_ARN \
+    SetupRoleArn=YOUR_SETUP_ROLE_ARN
 ```
 
-Keep the OIDC audience restricted to `sts.amazonaws.com` and use the account's
-`token.actions.githubusercontent.com` provider. Do not allow pull-request subjects
-or wildcard branches. If your repository customizes its OIDC subject, use its
-configured subject format while retaining the repository and branch restrictions.
+Use the fixture Region for deployment. The stack creates the CodeBuild project,
+its service role, a log group with 14-day retention, and the GitHub workflow-job
+webhook. No external IAM OIDC provider is needed.
 
-The setup role needs a two-hour maximum session duration and permission to assume
-the runner role. The runner trust permits the setup role. Both roles must have
-project-owner memberships in **both** fixture projects. Migration commands
-use a refreshable runner profile with `credential_source = Environment`; setup,
-assertions and cleanup use the setup identity.
+The webhook permits only the configured GitHub actor and the exact workflow name
+`Glue migration tests`. Keep that actor restricted to a trusted maintainer; the
+workflow name and runner labels are not security boundaries. The `main` condition
+is enforced by this workflow, not by the webhook: do not run untrusted workflow
+revisions or approve untrusted code for this privileged runner. Do not broaden
+the actor filter to allow arbitrary pull-request authors.
+
+### Role trust and permissions
+
+Add the stack's `ServiceRoleArn` output as a trusted AWS principal on the existing
+setup role, allowing `sts:AssumeRole`. The setup role must be allowed to assume
+the migration runner role, whose trust policy permits the setup role. Both roles
+must have project-owner memberships in **both** fixture projects.
+
+The setup profile uses `credential_source = EcsContainer` to obtain CodeBuild's
+service-role credentials. The migration profile uses the setup profile as its
+source. Both request one-hour sessions and refresh automatically during the
+90-minute job. Setup, assertions and cleanup use `migration-e2e-setup`; migration
+commands use `migration-e2e-runner`. The workflow checks both AWS account IDs
+before accessing the fixture.
 
 Grant the setup role scoped fixture permissions: it reads the fixture
 RDS master secret and network configuration, creates and cleans up temporary
@@ -76,8 +99,10 @@ Job migration also writes the fixture project's PassRole policy using the
 runner's `iam:GetRolePolicy`/`iam:PutRolePolicy` permissions. That shared grant is
 retained across test runs, as it is during production rollback.
 
-Repository files do not apply IAM policies or change branch protection. Apply
-trust changes through an authorized account administrator.
+Deploying the runner template applies its IAM policy, but does not modify the
+existing test-role trust policies or GitHub branch protection. Apply those
+separately through an authorized administrator. Review existing OIDC consumers
+before removing any shared legacy provider or trust statements.
 
 ### Existing fixture and local execution
 
@@ -119,5 +144,5 @@ Runs are serialized per account and Region within this repository and do not
 cancel active runs. GitHub concurrency does not coordinate with other
 repositories or local pytest: avoid overlapping those runs against this fixture.
 Cleanup uses pytest finalizers; force cancellation can leave temporary resources.
-JUnit reports are uploaded even on test failure. Glue execution, RDS and VPC
-endpoints incur AWS charges.
+JUnit reports are uploaded even on test failure. CodeBuild compute, Glue execution,
+RDS and VPC endpoints incur AWS charges.

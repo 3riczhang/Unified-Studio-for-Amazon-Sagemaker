@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodeBuild-hosted GitHub Actions runner for Glue migration E2E
+Parameters:
+  RepositoryUrl:
+    Type: String
+    AllowedPattern: 'https://github\.com/[^/]+/[^/]+'
+  GitHubActorId:
+    Type: String
+    AllowedPattern: '[0-9]+'
+    Description: GitHub numeric user ID allowed to trigger this privileged runner
+  ConnectionArn:
+    Type: String
+    Description: Available GitHub App connection authorized for this repository
+  SetupRoleArn:
+    Type: String
+    Description: Existing E2E setup role; it must trust the runner service role
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/codebuild/glue-migration-e2e
+      RetentionInDays: 14
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/glue-migration-e2e
+      Policies:
+        - PolicyName: RunnerAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt Logs.Arn
+              - Effect: Allow
+                Action:
+                  - codeconnections:GetConnection
+                  - codeconnections:GetConnectionToken
+                Resource: !Ref ConnectionArn
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref SetupRoleArn
+  Runner:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: glue-migration-e2e
+      ServiceRole: !GetAtt ServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+      Source:
+        Type: GITHUB
+        Location: !Ref RepositoryUrl
+        Auth:
+          Type: CODECONNECTIONS
+          Resource: !Ref ConnectionArn
+      TimeoutInMinutes: 100
+      QueuedTimeoutInMinutes: 30
+      ConcurrentBuildLimit: 1
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref Logs
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: WORKFLOW_JOB_QUEUED
+            - Type: WORKFLOW_NAME
+              Pattern: ^Glue migration tests$
+            - Type: ACTOR_ACCOUNT_ID
+              Pattern: !Sub ^${GitHubActorId}$
+Outputs:
+  ServiceRoleArn:
+    Value: !GetAtt ServiceRole.Arn
+  ProjectName:
+    Value: !Ref Runner

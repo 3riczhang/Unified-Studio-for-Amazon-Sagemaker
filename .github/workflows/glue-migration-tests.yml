@@ -44,16 +44,15 @@ jobs:
     name: Glue migration live E2E
     needs: unit
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: codebuild-glue-migration-e2e-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 90
-    permissions:
-      contents: read
-      id-token: write
     concurrency:
       group: glue-migration-e2e-${{ vars.GS_SMUS_E2E_ACCOUNT_ID }}-${{ vars.GS_SMUS_E2E_REGION }}
       cancel-in-progress: false
     env:
+      AWS_PROFILE: migration-e2e-setup
       AWS_DEFAULT_REGION: ${{ vars.GS_SMUS_E2E_REGION }}
+      GS_SMUS_E2E_PROFILE: migration-e2e-setup
       GS_SMUS_E2E_ACCOUNT_ID: ${{ vars.GS_SMUS_E2E_ACCOUNT_ID }}
       GS_SMUS_E2E_SETUP_ROLE_ARN: ${{ vars.GS_SMUS_E2E_SETUP_ROLE_ARN }}
       GS_SMUS_E2E_RUNNER_ROLE_ARN: ${{ vars.GS_SMUS_E2E_RUNNER_ROLE_ARN }}
@@ -81,22 +80,21 @@ jobs:
           PY
       - name: Install dependencies
         run: python -m pip install -r migration/glue/requirements.txt pytest hypothesis
-      - name: Configure test setup credentials
-        uses: aws-actions/configure-aws-credentials@v6.3.0
-        with:
-          role-to-assume: ${{ vars.GS_SMUS_E2E_SETUP_ROLE_ARN }}
-          role-session-name: glue-migration-e2e-${{ github.run_id }}
-          aws-region: ${{ vars.GS_SMUS_E2E_REGION }}
-          role-duration-seconds: 7200
-          allowed-account-ids: ${{ vars.GS_SMUS_E2E_ACCOUNT_ID }}
-      - name: Configure migration runner
+      - name: Configure refreshable test roles
         env:
           AWS_CONFIG_FILE: ${{ runner.temp }}/glue-migration-e2e-aws-config
         run: |
+          aws configure set profile.migration-e2e-setup.role_arn "$GS_SMUS_E2E_SETUP_ROLE_ARN"
+          aws configure set profile.migration-e2e-setup.credential_source EcsContainer
+          aws configure set profile.migration-e2e-setup.duration_seconds 3600
+          aws configure set profile.migration-e2e-setup.region "$GS_SMUS_E2E_REGION"
           aws configure set profile.migration-e2e-runner.role_arn "$GS_SMUS_E2E_RUNNER_ROLE_ARN"
-          aws configure set profile.migration-e2e-runner.credential_source Environment
+          aws configure set profile.migration-e2e-runner.source_profile migration-e2e-setup
+          aws configure set profile.migration-e2e-runner.duration_seconds 3600
           aws configure set profile.migration-e2e-runner.region "$GS_SMUS_E2E_REGION"
           echo "AWS_CONFIG_FILE=$AWS_CONFIG_FILE" >> "$GITHUB_ENV"
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$GS_SMUS_E2E_ACCOUNT_ID"
+          test "$(aws sts get-caller-identity --profile migration-e2e-runner --query Account --output text)" = "$GS_SMUS_E2E_ACCOUNT_ID"
       - name: Load existing fixture and run E2E tests
         run: |
           fixture_env="$(python .github/workflows/glue-migration-tests/e2e/provision_mysql.py env)"
