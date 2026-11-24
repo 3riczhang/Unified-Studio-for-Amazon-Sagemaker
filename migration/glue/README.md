@@ -3,9 +3,10 @@
 Move AWS Glue Python script jobs into an Amazon SageMaker Unified Studio project,
 clone supported connections into the project, or discover jobs by execution role.
 All three commands default to **dry-run**. Review the output before adding `--apply`.
-The [migration skill](SKILL.md) runs connection cloning for every selected job,
-including discovery results and already-migrated jobs, then offers script and
-attachment cutover after successful cloning.
+The [migration skill](SKILL.md) completes job migration and connection cloning,
+then offers script and attachment cutover. It skips steps already confirmed
+successful for that job and target. A job-only migration still needs its
+connection step; a completed migration does not rerun cloning.
 
 ## Prerequisites
 
@@ -112,8 +113,8 @@ and matches those roles to Glue jobs. Add `--apply` to migrate the matches.
 Only Python `.py` script jobs (`glueetl` or `pythonshell`) are matched. Visual,
 notebook, streaming, Ray and non-Python jobs are reported as unsupported and skipped.
 Unmatched jobs and jobs matching multiple projects are skipped. Connection
-cloning uses the separate command above; the migration skill runs it for every
-matched job before reporting completion.
+cloning uses the separate command above; the migration skill runs it for matched
+jobs whose connection step is unfinished before reporting completion.
 
 Discovery covers one Region. Permission denials exclude a domain and print a
 warning; a denied domain listing produces an empty plan. Other service errors
