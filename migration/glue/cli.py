@@ -39,9 +39,9 @@ def main(argv=None) -> int:
     )
 
     if result.get("skipped") and result["applied"]:
-        mode = "APPLIED (PassRole ensured; job already belongs to project)"
-    elif result.get("skipped") and result["passRole"]["needsUpdate"]:
-        mode = "DRY-RUN (PassRole planned; job already belongs to project)"
+        mode = "APPLIED (IAM grants ensured; job already belongs to project)"
+    elif result.get("skipped") and (result["passRole"]["needsUpdate"] or result["logRead"]["needsUpdate"]):
+        mode = "DRY-RUN (IAM grants planned; job already belongs to project)"
     elif result.get("skipped"):
         mode = "SKIPPED (already belongs to project)"
     elif result["applied"]:

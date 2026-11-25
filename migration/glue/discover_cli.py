@@ -48,6 +48,11 @@ def main(argv=None) -> int:
     if not args.apply:
         print("=== DRY-RUN (nothing changed) ===")
         _print_summary(plan)
+        if plan.matched:
+            print("Applying adds IAM permissions to each matched job's project role to pass the job's "
+                  "execution role to Glue and read all streams in the configured log groups. For logs "
+                  "encrypted by a Glue security configuration, it also grants scoped KMS decryption. "
+                  "Run the per-job migration dry-run to preview the exact policies.")
         print(json.dumps(result, indent=2, default=str))
         return 0
 

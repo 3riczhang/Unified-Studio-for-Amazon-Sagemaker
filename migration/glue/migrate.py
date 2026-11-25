@@ -1,9 +1,9 @@
-"""Orchestrate a job's migration: snapshot -> PassRole -> copy -> repoint -> tag."""
+"""Orchestrate a job's migration: snapshot -> project grants -> copy -> repoint -> tag."""
 from __future__ import annotations
 
 import uuid
 
-from . import datazone_resolve, jobmove, passrole, snapshot
+from . import datazone_resolve, jobmove, log_access, passrole, snapshot
 
 
 def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
@@ -20,7 +20,7 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
     WOULD be sent, mutating nothing.
 
     Jobs whose AmazonDataZoneProject tag matches the target project skip job
-    updates, but still plan/apply the project's PassRole grant.
+    updates, but still plan/apply the project's IAM grants.
     """
     glue = session.client("glue")
     job = glue.get_job(JobName=job_name)["Job"]
@@ -28,7 +28,8 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
     migration_id = uuid.uuid4().hex
 
     # Step 1: already-migrated check (tags live outside the job def).
-    tags = glue.get_tags(ResourceArn=_job_arn(session, job_name)).get("Tags", {})
+    job_arn = _job_arn(session, job_name)
+    tags = glue.get_tags(ResourceArn=job_arn).get("Tags", {})
     already = jobmove.is_already_migrated(job, tags, domain_id, project_id)
 
     result = {
@@ -47,6 +48,8 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
     iam = session.client("iam")
     grant = passrole.plan(iam, datazone, domain_id, project_id, job["Role"])
     result["passRole"] = grant
+    log_grant = log_access.plan(session, iam, glue, job, job_arn, grant)
+    result["logRead"] = log_grant
 
     if already:
         result["skipped"] = True
@@ -55,7 +58,8 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
         )
         if apply:
             passrole.apply(iam, grant)
-            result["applied"] = grant["needsUpdate"]
+            passrole.apply(iam, log_grant)
+            result["applied"] = grant["needsUpdate"] or log_grant["needsUpdate"]
         return result
 
     s3 = session.client("s3")
@@ -89,6 +93,7 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
 
     # Grant before updating the job; a denied IAM write leaves the job untouched.
     passrole.apply(iam, grant)
+    passrole.apply(iam, log_grant)
 
     # 2. Copy script (copy, NOT move -- original stays for rollback).
     result["destKey"] = jobmove.copy_script(
@@ -100,7 +105,7 @@ def migrate_job(session, *, job_name: str, domain_id: str, project_id: str,
 
     # 4. Tag LAST -- the commit marker that flips the job editable in SMUS.
     glue.tag_resource(
-        ResourceArn=_job_arn(session, job_name),
+        ResourceArn=job_arn,
         TagsToAdd=tags_to_add,
     )
 

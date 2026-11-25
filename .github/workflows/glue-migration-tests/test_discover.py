@@ -321,6 +321,8 @@ def test_cli_only_plans_and_applies_accessible_domains(dz, glue, monkeypatch, ca
     output = capsys.readouterr().out
     assert '"domainId": "d1"' not in output
     assert '"domainId": "d2"' in output
+    assert ("Applying adds IAM permissions" in output) is not apply
+    assert ("read all streams in the configured log groups" in output) is not apply
 
 
 @pytest.mark.parametrize("job_type", [

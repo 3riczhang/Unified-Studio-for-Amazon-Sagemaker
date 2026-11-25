@@ -62,6 +62,9 @@ jobs:
       GS_SMUS_E2E_DOMAIN_ID: ${{ vars.GS_SMUS_E2E_DOMAIN_ID }}
       GS_SMUS_E2E_PROJECT_ID: ${{ vars.GS_SMUS_E2E_PROJECT_ID }}
       GS_SMUS_E2E_PROJECT2_ID: ${{ vars.GS_SMUS_E2E_PROJECT2_ID }}
+      GS_SMUS_E2E_LOG_PROJECT_PROFILE_ID: ${{ vars.GS_SMUS_E2E_LOG_PROJECT_PROFILE_ID }}
+      GS_SMUS_E2E_LOG_KMS_KEY_ARN: ${{ vars.GS_SMUS_E2E_LOG_KMS_KEY_ARN }}
+      GS_SMUS_E2E_LOG_JOB_ROLE_ARN: ${{ vars.GS_SMUS_E2E_LOG_JOB_ROLE_ARN }}
       GS_SMUS_E2E_RUNNER_PROFILE: migration-e2e-runner
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +81,10 @@ jobs:
                      if not os.environ.get(f"GS_SMUS_E2E_{key}")]
           if missing:
               raise SystemExit("Missing repository variables: " + ", ".join(missing))
+          project_profile = os.environ.get("GS_SMUS_E2E_LOG_PROJECT_PROFILE_ID")
+          kms_key = os.environ.get("GS_SMUS_E2E_LOG_KMS_KEY_ARN")
+          if bool(project_profile) != bool(kms_key):
+              raise SystemExit("Configure both the log-test project profile and KMS key to enable log tests")
           PY
       - name: Install dependencies
         run: python -m pip install -r migration/glue/requirements.txt pytest hypothesis

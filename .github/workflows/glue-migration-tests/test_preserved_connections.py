@@ -62,7 +62,8 @@ class Session:
 
     def get_connection(self, **_kw):
         if "domainIdentifier" in _kw:
-            return {"environmentUserRole": "arn:aws:iam::111122223333:role/project/exec"}
+            partition = self.get_partition_for_region(self.region_name)
+            return {"environmentUserRole": f"arn:{partition}:iam::111122223333:role/project/exec"}
         raise PermissionError("no access to original connections")
 
     def get_object(self, **_kw):
@@ -96,8 +97,8 @@ def test_migration_preserves_dependencies_and_tags_original_names_last():
     session = Session()
     result = run(session, apply=True)
     assert result["applied"]
-    assert [op for op, _ in session.writes] == ["put", "policy", "copy", "update", "tag"]
-    update = session.writes[3][1]["JobUpdate"]
+    assert [op for op, _ in session.writes] == ["put", "policy", "policy", "copy", "update", "tag"]
+    update = session.writes[4][1]["JobUpdate"]
     for field in ("Connections", "Role", "NonOverridableArguments"):
         assert update[field] == JOB[field]
     assert update["DefaultArguments"]["--CONNECTION_NAME"] == "legacy-db"
@@ -129,14 +130,14 @@ def test_dry_run_reports_tags_without_writing():
     {"AmazonDataZoneProject": "p1", "AmazonDataZoneDomain": "another-domain"},
     {"AmazonDataZoneProject": "p1", "AmazonDataZoneMigratedJob": "false"},
 ])
-def test_project_owned_job_only_repairs_passrole(apply, tags):
+def test_project_owned_job_only_repairs_iam_grants(apply, tags):
     job = copy.deepcopy(JOB)
     session = Session(job=job, tags=tags)
     result = run(session, apply=apply)
     assert result["alreadyMigrated"]
     assert result["skipped"]
     assert result["applied"] == apply
-    assert [op for op, _ in session.writes] == (["policy"] if apply else [])
+    assert [op for op, _ in session.writes] == (["policy", "policy"] if apply else [])
 
 
 def test_project_owned_job_skips_without_resolving_bucket():
@@ -144,7 +145,7 @@ def test_project_owned_job_skips_without_resolving_bucket():
     result = migrate.migrate_job(
         session, job_name="job", domain_id="dzd-1", project_id="p1", apply=True)
     assert result["skipped"]
-    assert [op for op, _ in session.writes] == ["policy"]
+    assert [op for op, _ in session.writes] == ["policy", "policy"]
 
 
 def test_migration_rejects_force_option():
@@ -231,7 +232,7 @@ def test_exact_tag_capacity_counts_overwrites_and_excludes_system_tags(
     session = Session(tags=tags)
     result = run(session, apply=True)
     assert result["applied"]
-    assert [op for op, _ in session.writes] == ["put", "policy", "copy", "update", "tag"]
+    assert [op for op, _ in session.writes] == ["put", "policy", "policy", "copy", "update", "tag"]
     added = session.writes[-1][1]["TagsToAdd"]
     assert added["AmazonDataZoneProject"] == "p1"
     assert added["AmazonDataZoneMigratedJob"] == "true"
@@ -340,8 +341,11 @@ def test_rollback_without_tag_history_fails_before_writes(apply):
 def test_migration_and_rollback_use_sdk_partition(region, partition):
     session = Session()
     session.region_name = region
+    session.job["Role"] = f"arn:{partition}:iam::111122223333:role/legacy"
     assert migrate._job_arn(session, "job") == f"arn:{partition}:glue:{region}:111122223333:job/job"
-    run(session, apply=True)
+    result = run(session, apply=True)
+    assert result["logRead"]["policyDocument"]["Statement"][0]["Resource"][0] == (
+        f"arn:{partition}:logs:{region}:111122223333:log-group:/aws-glue/jobs/error:log-stream:*")
     saved = json.loads(session.writes[0][1]["Body"])
     rollback.rollback_from_snapshot(session, saved, apply=True)
     for operation, request in session.writes:

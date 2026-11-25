@@ -21,15 +21,16 @@ def plan(iam, datazone, domain_id: str, project_id: str, job_role: str) -> dict:
             or not re.fullmatch(r"[A-Za-z0-9+=,.@_/-]+", job_role[len(prefix):])):
         raise ValueError("Job role must be an exact IAM role ARN in the project's account")
 
-    # Separate policies avoid read/modify/write races between different job roles.
-    policy_name = "SMUSGlueJobPassRole-" + hashlib.sha256(job_role.encode()).hexdigest()[:20]
-    document = {
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow", "Action": "iam:PassRole", "Resource": job_role,
-            "Condition": {"StringEquals": {"iam:PassedToService": "glue.amazonaws.com"}},
-        }],
-    }
+    return plan_inline_policy(iam, project_role, "SMUSGlueJobPassRole", job_role, [{
+        "Effect": "Allow", "Action": "iam:PassRole", "Resource": job_role,
+        "Condition": {"StringEquals": {"iam:PassedToService": "glue.amazonaws.com"}},
+    }])
+
+
+def plan_inline_policy(iam, project_role: str, prefix: str, scope: str, statements: list[dict]) -> dict:
+    # Scope-specific policies avoid read/modify/write races between migrations.
+    policy_name = f"{prefix}-{hashlib.sha256(scope.encode()).hexdigest()[:20]}"
+    document = {"Version": "2012-10-17", "Statement": statements}
     role_name = project_role.rsplit("/", 1)[-1]
     try:
         existing = iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)["PolicyDocument"]

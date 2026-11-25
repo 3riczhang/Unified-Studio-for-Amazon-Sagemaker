@@ -34,7 +34,10 @@ Configure these GitHub repository variables before enabling live runs:
 | `GS_SMUS_E2E_DOMAIN_REGION` | DataZone domain Region |
 | `GS_SMUS_E2E_DOMAIN_ID` | Existing test domain ID |
 | `GS_SMUS_E2E_PROJECT_ID` | First test project ID |
-| `GS_SMUS_E2E_PROJECT2_ID` | Second test project ID; required to run all eight cases |
+| `GS_SMUS_E2E_PROJECT2_ID` | Second test project ID for the existing connection suite |
+| `GS_SMUS_E2E_LOG_PROJECT_PROFILE_ID` | Dedicated ToolingLite project profile for the project-role log tests |
+| `GS_SMUS_E2E_LOG_KMS_KEY_ARN` | Dedicated customer-managed CloudWatch Logs test key ARN |
+| `GS_SMUS_E2E_LOG_JOB_ROLE_ARN` | Optional encryption-enabled Glue job role. Defaults to the fixture job role |
 
 Use a dedicated test account and set these variables to your fixture's Region,
 roles, domain and projects. Each repository needs its own variable configuration
@@ -114,6 +117,47 @@ job execution with preserved original connections, cloning into two projects,
 two ownership-skip cases, prior-tag restoration, and CLI cutover/execution/recovery.
 The last case preserves the existing script rewrite test without requiring agent
 documentation or an installed command.
+
+### Project-role log regressions
+
+Set both log test variables to run the two additional cases against the same test
+domain. Use an enabled IAM-based project profile that deploys only its
+`ToolingLite` environment on creation, in the Glue account and Region, with a
+default project bucket. Each pytest run creates one ToolingLite project and one
+`service-role/AmazonSageMakerUserIAMExecutionRole-e2e-log-*` IAM role. A job first
+writes encrypted log markers, then the test uses temporary credentials from
+`default.iam` to read the same stream before and after migration. The cases cover
+Glue 5 custom output and error groups and Glue 4 continuous logs.
+To run just these tests after loading the fixture settings:
+
+```bash
+python -m pytest -c .github/workflows/glue-migration-tests/pytest.ini \
+  .github/workflows/glue-migration-tests/e2e/test_job_log_access_e2e.py -m e2e -v
+```
+
+The setup identity needs permission to create and delete projects from that
+profile, list and delete environments, create membership assignments, resolve
+the migration runner's DataZone profile, and obtain default IAM connection credentials. Grant it IAM
+create, pass, inspect, and delete access only for those project roles,
+including attaching and detaching `SageMakerStudioUserIAMDefaultExecutionPolicy`
+and managing inline policies. Allow the runner to read the Glue security
+configuration, get and put inline policies on those roles, and migrate to the
+disposable project buckets. Allow setup to remove test object versions and
+ToolingLite's `shared/` and `shared/.libs.json` objects and delete the project buckets. The
+ToolingLite provisioning role also needs access to deploy that profile.
+
+The setup identity needs to manage `e2e-log-*` Glue security configurations and
+CloudWatch log groups, discover and read the resulting streams, and decrypt test
+logs through CloudWatch Logs. The Glue job role needs `logs:AssociateKmsKey` on the
+test groups and access to describe and use the configured key. Allow the regional
+CloudWatch Logs service to use the key for the test groups and let account IAM
+policies authorize the project role. After provisioning, the test detaches the
+standard execution policy from the disposable role so its broad log reads
+cannot mask the migration grant. Teardown reattaches it for environment deletion.
+
+Teardown waits for project deletion before deleting the role and its inline
+policies. It reports the project ID and role ARN so interrupted runs can be
+cleaned up without changing the retained fixture roles.
 
 Runs are serialized per account and Region within this repository and do not
 cancel active runs. GitHub concurrency does not coordinate with other

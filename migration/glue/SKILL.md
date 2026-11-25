@@ -16,9 +16,9 @@ Both per-job commands take `--job-name`, `--domain-id`, `--project-id`, `--regio
 
 CLIs and the rollback helper own migration and rollback. No implementation reads, extra checks/tests/backups/readbacks or ad-hoc scripts/fixes.
 
-For requested migration rollback, use `migration.glue.rollback.rollback_from_snapshot(session, snapshot)` with the snapshot from before the first change, following the [README recovery example](README.md#recovery). Preview first; use `apply=True` when rollback is authorized. Never reimplement restoration with manual AWS calls. Report that rollback overwrites later job edits and retains cloned connections, secret tags, copied scripts, snapshots and project PassRole policies. Recovery from a failed connection cutover uses its live backups as described below, not the pre-migration snapshot.
+For requested migration rollback, use `migration.glue.rollback.rollback_from_snapshot(session, snapshot)` with the snapshot from before the first change, following the [README recovery example](README.md#recovery). Preview first; use `apply=True` when rollback is authorized. Never reimplement restoration with manual AWS calls. Report that rollback overwrites later job edits and retains cloned connections, secret tags, copied scripts, snapshots and project IAM grants. Recovery from a failed connection cutover uses its live backups as described below, not the pre-migration snapshot.
 
-After rollback completes, explicitly tell the user: **“Rollback did not remove the `iam:PassRole` permission on the Glue job execution role from the SMUS project execution role.”** Explain that other jobs may share the grant and consumers must be checked before manually removing it.
+After rollback completes, explicitly tell the user: **“Rollback did not remove the `iam:PassRole` permission on the Glue job execution role from the SMUS project execution role.”** Explain that any log-read grants are also retained and other jobs may share these grants. Check consumers before removing a grant manually.
 
 Cloning automatically tags untagged and foreign-project secrets `for-use-with-all-datazone-projects=true`, preserving existing project ownership. Proceed without a separate sharing confirmation or `--shared-secret` flag. Report the CLI's tag changes as part of the result.
 

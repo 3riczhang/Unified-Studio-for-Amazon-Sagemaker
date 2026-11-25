@@ -70,6 +70,17 @@ IAM connection. Dry runs include the proposed grant under `passRole` without
 writing IAM policies. On apply, each distinct job role gets a dedicated inline
 policy named `SMUSGlueJobPassRole-<hash>` on the project role. Existing matching
 policies are reused; conflicting policies fail without being overwritten.
+The dry run also shows `logRead`, an inline `logs:GetLogEvents` grant scoped to
+the job's configured CloudWatch log groups in the Glue Region and account. It
+honors custom log settings and leaves those settings unchanged. A Glue security
+configuration with CloudWatch encryption adds `kms:Decrypt` on its configured
+key, restricted to CloudWatch Logs in the job's Region and the planned log groups.
+The key policy must permit this use. The tool leaves key policies unchanged.
+Jobs with the same log groups and key reuse the same grant. Everyone who uses
+the project role can read all streams in those groups, including other jobs'
+streams when the groups are shared. Run-specific overrides, keys associated
+outside the Glue security configuration, and historical logging settings outside
+the job's current configuration are not covered.
 Use `--bucket BUCKET_NAME` to override the bucket, or `--domain-region REGION` when the
 domain is in a different Region from the Glue resources. `--region` defaults to
 `us-east-2`; set it explicitly for your resources.
@@ -109,7 +120,9 @@ python -m migration.glue.discover_cli --region eu-north-1 \
 ```
 
 Discovery lists accessible domains and projects, resolves their execution roles,
-and matches those roles to Glue jobs. Add `--apply` to migrate the matches.
+and matches those roles to Glue jobs. Add `--apply` to migrate the matches and
+ensure the project roles' PassRole and log-read grants, including applicable KMS
+access. Use the per-job dry run to see exact policies before applying.
 Only Python `.py` script jobs (`glueetl` or `pythonshell`) are matched. Visual,
 notebook, streaming, Ray and non-Python jobs are reported as unsupported and skipped.
 Unmatched jobs and jobs matching multiple projects are skipped. Connection
@@ -138,7 +151,7 @@ Microsoft SQL Server, Oracle, Google BigQuery, Snowflake and Teradata.
   by job migration.
 - Only Python script jobs are supported; this tool does not convert visual ETL jobs.
 - Job migration skips job updates when `AmazonDataZoneProject` already matches
-  the target project, but still ensures the project's PassRole grant on apply.
+  the target project and still ensures its PassRole and log-read grants on apply.
   This also repairs grants for previously migrated jobs. Repeated cloning reuses
   ready clones with matching provenance; conflicting names fail before creation.
 - Original connection names are stored in indexed
@@ -184,8 +197,8 @@ Snapshots must contain `priorJobTags`, which migration records before writing.
 Rollback rejects snapshots without this tag history before changing the job.
 
 Rollback retains cloned connections, secret tags, copied scripts, snapshots and
-project PassRole policies. A failed migration can also leave its PassRole policy;
-other jobs may share that grant. Inspect consumers before manually removing it.
+project IAM grants. A failed migration can also leave grants that other jobs
+share. Inspect consumers before manually removing them.
 If cloning fails partway through, completed clones and clones whose creation
 outcome is uncertain may remain. Error notes identify retained resources and
 failed cleanup. Verify consumers before manually deleting clones or removing
@@ -232,9 +245,15 @@ Only include permissions for the commands you need.
     },
     {
       "Effect": "Allow",
-      "Action": "glue:GetTriggers",
+      "Action": ["glue:GetTriggers", "glue:GetSecurityConfiguration"],
       "Resource": "*",
       "Condition": {"StringEquals": {"aws:RequestedRegion": "<REGION>"}}
+    },
+    {
+      "Sid": "DescribeCloudWatchKeyWhenConfiguredByAlias",
+      "Effect": "Allow",
+      "Action": "kms:DescribeKey",
+      "Resource": "arn:aws:kms:<REGION>:<ACCOUNT_ID>:key/<CLOUDWATCH_LOG_KEY_ID>"
     },
     {
       "Effect": "Allow",
@@ -303,17 +322,19 @@ APIs; its connection/trigger reads are for best-effort snapshots. Job migration
 always needs `datazone:ListConnections` and `datazone:GetConnection` to resolve the
 project role, including with `--bucket` and on already-migrated jobs.
 `datazone:GetEnvironment` is only needed for bucket resolution.
+Jobs with a Glue security configuration need `glue:GetSecurityConfiguration`
+to determine whether CloudWatch log groups include the security suffix.
 Rollback needs S3 read access to the snapshot plus Glue update/tag permissions.
 Tag policies must allow restoration of the prior tag values.
 
-The new caller permissions are `iam:GetRolePolicy` to check the project's grant,
-`iam:PutRolePolicy` to create it on apply, and `iam:GetRole` when Glue supplies a
+The caller needs `iam:GetRolePolicy` to check the project's grants,
+`iam:PutRolePolicy` to create them on apply, and `iam:GetRole` when Glue supplies a
 bare job role name. Include role paths in `<JOB_ROLE_NAME>` and
 `<PROJECT_ROLE_NAME>` where applicable. Scope policy-write access to the intended
 project roles: `iam:PutRolePolicy` permits changing those roles' inline policies.
 Dry runs need the reads but not `iam:PutRolePolicy`. Connection cloning and
-rollback do not need these additional IAM permissions. The grant does not bypass
-permissions boundaries or organization policies, and creation fails if the
+rollback do not need these additional IAM permissions. The grants remain subject
+to permissions boundaries and organization policies, and creation fails if the
 project role's inline-policy size quota is exhausted.
 
 These DataZone actions require `Resource: "*"`; they do not support domain ARN
